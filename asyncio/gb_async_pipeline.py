@@ -1,5 +1,7 @@
 import asyncio
 import uuid
+import random
+
 
 # right now its batch style execution that i will turn into real-time flow engine
 # now this is a dag streaming engine/ but not real-time like we need
@@ -20,12 +22,21 @@ class Node:
         self.input_queue = asyncio.Queue(maxsize=queue_size) # now if downstream is slow then producer will
         # try to be prodcue slowly, it's basic backpressure handling'
 
+
     @classmethod
     async def input_coro(cls, Processor=None, output_queue = None, stop_event = None):
         while not stop_event.is_set():
-            data = str(uuid.uuid4())
+            #data = str(uuid.uuid4())
+            data = random.randint(1,100)
             await output_queue.put(data)
-            await asyncio.sleep(0)
+            await asyncio.sleep(1)
+
+    @classmethod
+    async def anomaly(cls, processor = None,input_data = None):
+        if input_data > 90:
+            print("Anomaly Detected:",input_data)
+        return input_data
+
 
     @classmethod
     async def reverse(cls, Processor=None, input_data=None):
@@ -219,12 +230,12 @@ class Graph:
 input_d = {
     'nodes': {
         'inp' : {'coro': Node.input_coro, },
-        'rev' : {'coro' : Node.reverse,},
+        'anomaly' : {'coro' : Node.anomaly,},
         'out' : {'coro' : Node.output_coro,}
         },
     'graph' : {
-        'inp' : {'rev', 'out'},
-        'rev' : {'out'},
+        'inp' : {'anomaly'},
+        'anomaly' : {'out'},
         'out' : None,
         },
     }
