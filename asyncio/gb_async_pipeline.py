@@ -239,7 +239,7 @@ input_d = {
         'inp' : {'rev'},  # earlier it was inp -> rev/out!!! rev-> out
         'rev' : {'out'}, # now it's inp->rev->out ( flow is linear )
         'out' : None,
-        },
+        }
     }
 
 async def main():
