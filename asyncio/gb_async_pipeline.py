@@ -8,7 +8,7 @@ import random
 # right now this is just high-thrp DAG executor not really what i need
 
 class Node:
-    def __init__(self, id, coro, workers=1, queue_size=100, retries=3):
+    def __init__(self, id, coro, workers=3, queue_size=4, retries=3):
         self.id = id
         self.coro = coro
         self.workers = workers
@@ -26,17 +26,9 @@ class Node:
     @classmethod
     async def input_coro(cls, Processor=None, output_queue = None, stop_event = None):
         while not stop_event.is_set():
-            #data = str(uuid.uuid4())
-            data = random.randint(1,100)
+            data = str(uuid.uuid4())
             await output_queue.put(data)
-            await asyncio.sleep(1)
-
-    @classmethod
-    async def anomaly(cls, processor = None,input_data = None):
-        if input_data > 90:
-            print("Anomaly Detected:",input_data)
-        return input_data
-
+            await asyncio.sleep(0.1)
 
     @classmethod
     async def reverse(cls, Processor=None, input_data=None):
@@ -86,10 +78,13 @@ class Graph:
 
         try:
             if not node.inputs:
-                await node.coro(
-                    output_queue = self._fanout_queue(node), # parallel push downstream to multiple nodes
-                    stop_event = self.stop_event  # stop the producer
-                    )
+                try:
+                    await node.coro(
+                        output_queue = self._fanout_queue(node), # parallel push downstream to multiple nodes
+                        stop_event = self.stop_event  # stop the producer
+                        )
+                except Exception as e:
+                    print(f"Producer {node.id} crashed : {e}")
             else:
                 while True: # worker node
                     if self.stop_event.is_set() and node.input_queue.empty():
@@ -148,16 +143,23 @@ class Graph:
                await asyncio.gather(*[
                    self.graph.nodes[out_id].input_queue.put(data)
                    for out_id in self.node.outputs
-                   ]) # why not fanout parallely?
+                   ]) # fanout paralllely
 
         return FanOut(self, node)
 
     #producer gets fake queue, which pushes internally into multiple queues
 
     async def dlq_handler(self):
-        while True:
-            item = await self.dlq.get()   # recieve the failed nodes/messages
-            print("DLQ nodes: ", item)
+        while not self.stop_event.is_set() or not self.dlq.empty():
+            try:
+                item = await self.dlq.get()   # recieve the failed nodes/messages
+                print("DLQ nodes: ", item)
+                self.dlq.task_done()
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                print("DLQ handler cancelled")
+                raise
 
     async def start(self, run_time = 5):
         self.start_time = asyncio.get_event_loop().time() # to capture start time(thrp)
@@ -230,12 +232,12 @@ class Graph:
 input_d = {
     'nodes': {
         'inp' : {'coro': Node.input_coro, },
-        'anomaly' : {'coro' : Node.anomaly,},
+        'rev' : {'coro' : Node.reverse,},
         'out' : {'coro' : Node.output_coro,}
         },
     'graph' : {
-        'inp' : {'anomaly'},
-        'anomaly' : {'out'},
+        'inp' : {'rev'}, # before -> inp->rev/out, now linear flow
+        'rev' : {'out'},
         'out' : None,
         },
     }
