@@ -236,8 +236,8 @@ input_d = {
         'out' : {'coro' : Node.output_coro,}
         },
     'graph' : {
-        'inp' : {'rev'}, # before -> inp->rev/out, now linear flow
-        'rev' : {'out'},
+        'inp' : {'rev'},  # earlier it was inp -> rev/out!!! rev-> out
+        'rev' : {'out'}, # now it's inp->rev->out ( flow is linear )
         'out' : None,
         },
     }
