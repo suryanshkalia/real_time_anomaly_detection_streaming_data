@@ -1,42 +1,5 @@
 import asyncio
-import uuid
-import random
-
-
-# right now its batch style execution that i will turn into real-time flow engine
-# now this is a dag streaming engine/ but not real-time like we need
-# right now this is just high-thrp DAG executor not really what i need
-
-class Node:
-    def __init__(self, id, coro, workers=3, queue_size=4, retries=3):
-        self.id = id
-        self.coro = coro
-        self.workers = workers
-        self.retries = retries
-        self.processed = 0
-        self.failed = 0
-
-        self.inputs = set()  #dependencies( b takes from a so b depends upon a)
-        self.outputs = set()  #downstream nodes( where the data is flowing towards)
-
-        self.input_queue = asyncio.Queue(maxsize=queue_size) # now if downstream is slow then producer will
-        # try to be prodcue slowly, it's basic backpressure handling'
-
-
-    @classmethod
-    async def input_coro(cls, Processor=None, output_queue = None, stop_event = None):
-        while not stop_event.is_set():
-            data = str(uuid.uuid4())
-            await output_queue.put(data)
-            await asyncio.sleep(0.1)
-
-    @classmethod
-    async def reverse(cls, Processor=None, input_data=None):
-        return input_data[::-1]
-
-    @classmethod
-    async def output_coro(cls, Processor=None, input_data=None):
-        print("output: ", input_data)
+from nodes import Node
 
 class Graph:
     def __init__(self):
@@ -112,9 +75,17 @@ class Graph:
                                 else:
                                     await node.coro(input_data = data) # sink
 
-                                node.processed += 1
-                                break
+                                node.processed += 1 # after first is processed we cal curr time
 
+                                curr_time = asyncio.get_event_loop().time()
+
+                                if node.first_item_time is None:
+                                    node.first_item_time = curr_time # first item processsrd at curr time
+
+                                node.last_item_time = curr_time # end time
+                                # done to get the only time when workers are engaged
+
+                                break
 
                             except Exception as e:
                                 if attempt == node.retries - 1:
@@ -133,19 +104,18 @@ class Graph:
             raise
 
     def _fanout_queue(self, node):
-
-        class FanOut:
+        class Fanout:
             def __init__(self, graph, node):
                 self.graph = graph
                 self.node = node
 
             async def put(self, data):
-               await asyncio.gather(*[
-                   self.graph.nodes[out_id].input_queue.put(data)
-                   for out_id in self.node.outputs
-                   ]) # fanout paralllely
+                for out_id in self.node.outputs:
+                    q = self.graph.nodes[out_id].input_queue
 
-        return FanOut(self, node)
+                    await q.put(data) # if queue is filled at 2 items, at 3rd this will be blocked
+                    print(f"PUSH → {out_id} | queue size: {q.qsize()}")
+        return Fanout(self, node)
 
     #producer gets fake queue, which pushes internally into multiple queues
 
@@ -155,15 +125,11 @@ class Graph:
                 item = await self.dlq.get()   # recieve the failed nodes/messages
                 print("DLQ nodes: ", item)
                 self.dlq.task_done()
-            except asyncio.TimeoutError:
-                continue
             except asyncio.CancelledError:
                 print("DLQ handler cancelled")
                 raise
 
     async def start(self, run_time = 5):
-        self.start_time = asyncio.get_event_loop().time() # to capture start time(thrp)
-
         tasks = []
 
         for node in self.nodes.values():
@@ -175,6 +141,7 @@ class Graph:
         tasks.append(asyncio.create_task(self.monitor()))
         tasks.append(asyncio.create_task(self.dlq_handler()))
 
+
         await asyncio.sleep(run_time)
 
         # triggering shutdown gracefuly
@@ -183,11 +150,12 @@ class Graph:
         # wait for queues to drain
         await asyncio.gather(*[
             node.input_queue.join()  # waits till queue's are drained
-            # actuall draining is done by the worker n odes( in run_node )
+            # actuall draining is done by the worker nodes( in run_node )
             # queue has internal counter which remains the same until the task is done comeplet
             # rhen counterf -1, join() waits till conuter is not 0( until all items are processed completely) ,
             # mat;ab jitne items put() hue utne hi taksdone() call hone chaihihye, never forget node.task_done() neto join() will never return and program will crash
             for node in self.nodes.values()
+            if node.inputs # only nodes that consumes
             ])
 
         for t in tasks:
@@ -195,25 +163,48 @@ class Graph:
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
+        print("\n----Final system metrics----")
+
         for node in self.nodes.values():
-            node_throughput = node.processed / ( asyncio.get_event_loop().time() - self.start_time )
-            print(f"{node.id}: {node_throughput} items/sec ")
+            #skipping producer
+            if not node.inputs: # no input->producer
+                print(f"{node.id}: producer node")
+                continue
 
-        end_time = asyncio.get_event_loop().time()
+            if node.first_item_time and node.last_item_time:
+                time_elapsed = node.last_item_time - node.first_item_time
 
-        sinks = [ n for n in self.nodes.values() if not n.outputs ] # if not output = true then it is a sink node
-        total_processed = sum(n.processed for n in sinks)
+                if time_elapsed > 0:
+                    throughput = node.processed / time_elapsed
+                else:
+                    throughput = 0
+            else:
+                throughput = 0
 
-        throughput = total_processed/ ( end_time - self.start_time )
-        print("System throughput: ", throughput, "items/sec" )
+            print(f"{node.id}: {throughput: .2f} items/sec")
 
+        # system throughput
+        sinks = [ n for n in self.nodes.values() if not n.outputs ]
+
+        times = [
+            (n.last_item_time - n.first_item_time)
+            for n in sinks
+            if n.first_item_time and n.last_item_time
+            ]
+
+        if times:
+            time_elapsed = max(times)
+            total_processed = sum(n.processed for n in sinks)
+
+            system_throughput = total_processed/time_elapsed
+            print(f"system throughput: {system_throughput: .2f} items/sec")
 
     # live monitor
     async def monitor(self):
         prev = 0
         while not self.stop_event.is_set():
             current = sum(n.processed for n in self.nodes.values())
-            print("Throughput: ", current - prev, "items/sec")
+            print("throughput: ", current - prev, "items/sec")
             prev = current
 
             print("\n---System Stats---")
@@ -228,29 +219,3 @@ class Graph:
 
             await asyncio.sleep(1)
 
-
-input_d = {
-    'nodes': {
-        'inp' : {'coro': Node.input_coro, },
-        'rev' : {'coro' : Node.reverse,},
-        'out' : {'coro' : Node.output_coro,}
-        },
-    'graph' : {
-        'inp' : {'rev'},  # earlier it was inp -> rev/out!!! rev-> out
-        'rev' : {'out'}, # now it's inp->rev->out ( flow is linear )
-        'out' : None,
-        }
-    }
-
-async def main():
-    graph = Graph()
-
-    graph.build(
-        node_part = input_d['nodes'],
-        graph_part = input_d['graph']
-        )
-
-    await graph.start()
-
-
-asyncio.run(main())
