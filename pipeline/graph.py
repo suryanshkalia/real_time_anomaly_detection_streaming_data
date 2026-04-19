@@ -141,47 +141,44 @@ class Graph:
         tasks.append(asyncio.create_task(self.monitor()))
         tasks.append(asyncio.create_task(self.dlq_handler()))
 
+        try:
+            await asyncio.gather(*[
+                node.input_queue.join()  # waits till queue's are drained
+                # actuall draining is done by the worker nodes( in run_node )
+                # queue has internal counter which remains the same until the task is done comeplet
+                # rhen counterf -1, join() waits till conuter is not 0( until all items are processed completely) ,
+                # mat;ab jitne items put() hue utne hi taksdone() call hone chaihihye, never forget node.task_done() neto join() will never return and program will crash
+                for node in self.nodes.values()
+                if node.inputs # only nodes that consumes
+                ])
 
-        await asyncio.sleep(run_time)
+            for t in tasks:
+                t.cancel()
 
-        # triggering shutdown gracefuly
-        self.stop_event.set()
-        # part of the shutdown
-        # wait for queues to drain
-        await asyncio.gather(*[
-            node.input_queue.join()  # waits till queue's are drained
-            # actuall draining is done by the worker nodes( in run_node )
-            # queue has internal counter which remains the same until the task is done comeplet
-            # rhen counterf -1, join() waits till conuter is not 0( until all items are processed completely) ,
-            # mat;ab jitne items put() hue utne hi taksdone() call hone chaihihye, never forget node.task_done() neto join() will never return and program will crash
-            for node in self.nodes.values()
-            if node.inputs # only nodes that consumes
-            ])
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        for t in tasks:
-            t.cancel()
+            print("\n----Final system metrics----")
 
-        await asyncio.gather(*tasks, return_exceptions=True)
+            for node in self.nodes.values():
+                #skipping producer
+                if not node.inputs: # no input->producer
+                    print(f"{node.id}: producer node")
+                    continue
 
-        print("\n----Final system metrics----")
+                if node.first_item_time and node.last_item_time:
+                    time_elapsed = node.last_item_time -     node.first_item_time
 
-        for node in self.nodes.values():
-            #skipping producer
-            if not node.inputs: # no input->producer
-                print(f"{node.id}: producer node")
-                continue
-
-            if node.first_item_time and node.last_item_time:
-                time_elapsed = node.last_item_time - node.first_item_time
-
-                if time_elapsed > 0:
-                    throughput = node.processed / time_elapsed
+                    if time_elapsed > 0:
+                        throughput = node.processed / time_elapsed
+                    else:
+                        throughput = 0
                 else:
                     throughput = 0
-            else:
-                throughput = 0
 
             print(f"{node.id}: {throughput: .2f} items/sec")
+
+        except asyncio.CancelledError:
+            print("graph shutdown")
 
         # system throughput
         sinks = [ n for n in self.nodes.values() if not n.outputs ]
