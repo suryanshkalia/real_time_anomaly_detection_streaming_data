@@ -1,5 +1,6 @@
 import asyncio
 from nodes import Node
+from constants import STOP
 
 class Graph:
     def __init__(self):
@@ -40,7 +41,7 @@ class Graph:
     async def run_node(self, node: Node):
 
         try:
-            if not node.inputs:
+            if not node.inputs: # producer node
                 try:
                     await node.coro(
                         output_queue = self._fanout_queue(node), # parallel push downstream to multiple nodes
@@ -50,22 +51,25 @@ class Graph:
                     print(f"Producer {node.id} crashed : {e}")
             else:
                 while True: # worker node
-                    if self.stop_event.is_set() and node.input_queue.empty():
-                        break # break after draining the queues
+                    data = await node.input_queue.get()
+                    # handle stop
+                    if data is STOP:
+                        print(f"{node.id} recieved stop")
+                        # send stop downstream to all workers
+                        await asyncio.gather(*[
+                            self.nodes[out_id].input_queue.put(STOP)
+                            for out_id in node.outputs
+                            for i in range(self.nodes[out_id].workers)
+                            ])
 
-                    try:
-                        data = await asyncio.wait_for(node.input_queue.get(), timeout=1)
-                    except asyncio.TimeoutError:
-                        if self.stop_event.is_set():
-                            break
-                        continue
+                        node.input_queue.task_done()
+                        break
 
                     try:
                         for attempt in range(node.retries): # 2 retries
                             try:
                                 if node.outputs:
-                                    result = await asyncio.wait_for(node.coro(input_data = data),
-                                    timeout=5) # process
+                                    result = await node.coro(input_data = data)
 
                                     await asyncio.gather(*[
                                         self.nodes[out_id].input_queue.put(result)
@@ -129,7 +133,7 @@ class Graph:
                 print("DLQ handler cancelled")
                 raise
 
-    async def start(self, run_time = 5):
+    async def start(self):
         tasks = []
 
         for node in self.nodes.values():
@@ -142,20 +146,9 @@ class Graph:
         tasks.append(asyncio.create_task(self.dlq_handler()))
 
         try:
-            await asyncio.gather(*[
-                node.input_queue.join()  # waits till queue's are drained
-                # actuall draining is done by the worker nodes( in run_node )
-                # queue has internal counter which remains the same until the task is done comeplet
-                # rhen counterf -1, join() waits till conuter is not 0( until all items are processed completely) ,
-                # mat;ab jitne items put() hue utne hi taksdone() call hone chaihihye, never forget node.task_done() neto join() will never return and program will crash
-                for node in self.nodes.values()
-                if node.inputs # only nodes that consumes
-                ])
-
-            for t in tasks:
-                t.cancel()
-
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            print("graph shutdown")
 
             print("\n----Final system metrics----")
 
@@ -175,7 +168,7 @@ class Graph:
                 else:
                     throughput = 0
 
-            print(f"{node.id}: {throughput: .2f} items/sec")
+                print(f"{node.id}: {throughput: .2f} items/sec")
 
         except asyncio.CancelledError:
             print("graph shutdown")
@@ -199,7 +192,7 @@ class Graph:
     # live monitor
     async def monitor(self):
         prev = 0
-        while not self.stop_event.is_set():
+        while True:
             current = sum(n.processed for n in self.nodes.values())
             print("throughput: ", current - prev, "items/sec")
             prev = current

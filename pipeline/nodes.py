@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-
+from constants import STOP
 
 # right now its batch style execution that i will turn into real-time flow engine
 # now this is a dag streaming engine/ but not real-time like we need
@@ -25,6 +25,7 @@ class Node:
 
 
     @classmethod
+    #producer
     async def input_coro(cls, Processor=None, output_queue = None, stop_event = None):
         try:
             while not stop_event.is_set():
@@ -37,6 +38,10 @@ class Node:
         except asyncio.CancelledError:
             print("Producer Stopped")
             raise
+        finally:
+            # sending stop downstream
+            print("Producer sending stop")
+            await output_queue.put(STOP) # stop will be fanned out to all nodes
 
     @classmethod
     async def reverse(cls, Processor=None, input_data=None):
