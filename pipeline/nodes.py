@@ -26,13 +26,17 @@ class Node:
 
     @classmethod
     async def input_coro(cls, Processor=None, output_queue = None, stop_event = None):
-        # use while not stop_event.is_set() and not range for infinite
-           for i in range(10): # controlled input
-               item_id = str(uuid.uuid4()) # generating unique id per item
-               await output_queue.put(item_id)
-               print("produced:", item_id)
+        try:
+            while not stop_event.is_set():
+                item_id = str(uuid.uuid4())
 
-           stop_event.set() # to block after 10 items
+                await output_queue.put(item_id)
+                print("Produced: ", item_id)
+                await asyncio.sleep(0.1)  # to control the rate of producer
+                # cant let the queue fill fully to prevent backpressure
+        except asyncio.CancelledError:
+            print("Producer Stopped")
+            raise
 
     @classmethod
     async def reverse(cls, Processor=None, input_data=None):
