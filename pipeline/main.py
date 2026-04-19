@@ -22,8 +22,11 @@ async def main():
         node_part = input_d['nodes'],
         graph_part = input_d['graph']
         )
-
-    await graph.start()
+    try:
+        await graph.start()
+    except KeyboardInterrupt:
+        print("\nStopping system...")
+        graph.stop_event.set()
 
 
 asyncio.run(main())
