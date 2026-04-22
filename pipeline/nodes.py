@@ -26,31 +26,44 @@ class Node:
 
     @classmethod
     #producer
-    async def input_coro(cls, Processor=None, output_queue = None, stop_event = None):
+    async def input_coro(cls, grph=None, output_queue = None, stop_event = None):
         try:
-            while not stop_event.is_set():
+            while True:
                 item_id = str(uuid.uuid4())
 
                 await output_queue.put(item_id)
                 print("Produced: ", item_id)
-                await asyncio.sleep(0.1)  # to control the rate of producer
-                # cant let the queue fill fully to prevent backpressure
-        except asyncio.CancelledError:
-            print("Producer Stopped")
-            raise
+
+                pressure = grph.get_global_pressure()
+
+                # rate of producer controlled via backpressure signal
+                if pressure > 0.8:
+                    sleep_time = 0.3
+                elif pressure > 0.5:
+                    sleep_time = 0.15
+                else:
+                    sleep_time = 0.01
+
+                print(f"[Producer] pressure={pressure:.2f}, sleep={sleep_time}")
+                await asyncio.sleep(sleep_time)
+
         finally:
-            # sending stop downstream
-            print("Producer sending stop")
-            await output_queue.put(STOP) # stop will be fanned out to all nodes
+            print("Producer Stopped Sedning")
+            await output_queue.put(STOP)
 
     @classmethod
-    async def reverse(cls, Processor=None, input_data=None):
+    async def reverse(cls, grph=None, input_data=None):
+        if input_data == STOP:
+            return STOP
         await asyncio.sleep(0.5) # without thuis the revrerse is too fast, queues wont be filled
         # properly, producer will rarely block so downstream is too fast
         return input_data[::-1]
 
     @classmethod
-    async def output_coro(cls, Processor=None, input_data=None):
+    async def output_coro(cls, grph=None, input_data=None):
+        if input_data == STOP:
+            print("Output node recieved Stop, shutting down")
+            return STOP
         print("output: ", input_data)
 
 

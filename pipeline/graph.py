@@ -1,3 +1,6 @@
+#eal_time_anomaly_detection_streaming_data/pipeline/graph.py", line 241, in monitor
+#print(f"Global Pressure: {self.get_global_pressure():.2f}")
+#AttributeError: 'Graph' object has no attribute 'get_global_pressure'. Did you mean:
 import asyncio
 from nodes import Node
 from constants import STOP
@@ -11,6 +14,19 @@ class Graph:
 
         self.forward = {}   # forward data flow
         self.backward = {}  # reverse dependencies
+
+    # this will store the pressure for each queue and max pressure will be returned
+    def get_global_pressure(self):
+        pressures = []
+
+        for node in self.nodes.values():
+            if node.inputs: # only consumer queues
+                q = node.input_queue
+                if q.maxsize > 0:
+                    pressures.append(q.qsize()/ q.maxsize)
+        return max(pressures) if pressures else 0
+    # max will give the slowest, most congested queue so the producer can react accordingly even if the other queue's are not that filled up
+    # so if one queue has 0.99 pressure then global is this 0.99
 
     def add_node(self, node: Node):
         self.nodes[node.id] = node
@@ -44,6 +60,7 @@ class Graph:
             if not node.inputs: # producer node
                 try:
                     await node.coro(
+                        grph = self, # the graph object
                         output_queue = self._fanout_queue(node), # parallel push downstream to multiple nodes
                         stop_event = self.stop_event  # stop the producer
                         )
@@ -114,11 +131,33 @@ class Graph:
                 self.node = node
 
             async def put(self, data):
+                pressures= []
+
+                #checking downstream presssure befrore pushing
                 for out_id in self.node.outputs:
                     q = self.graph.nodes[out_id].input_queue
+                    if q.maxsize > 0:
+                        pressures.append(q.qsize() / q.maxsize)
 
-                    await q.put(data) # if queue is filled at 2 items, at 3rd this will be blocked
-                    print(f"PUSH → {out_id} | queue size: {q.qsize()}")
+                max_pressure = max(pressures) if pressures else 0
+
+                # control upstream push
+                if max_pressure > 0.8:
+                    await asyncio.sleep(0.2)
+                elif max_pressure > 0.5:
+                    await asyncio.sleep(0.05)
+
+                #pushing now
+
+                for out_id in self.node.outputs:
+                    q = self.graph.nodes[out_id].input_queue
+                    await q.put(data)
+
+                    print(
+                        f"push-> {out_id} | "
+                        f"size = {q.qsize()}"
+                        f"pressure = {q.qsize()/q.maxsize:.2f}"
+                        )
         return Fanout(self, node)
 
     #producer gets fake queue, which pushes internally into multiple queues
@@ -139,7 +178,7 @@ class Graph:
         for node in self.nodes.values():
             worker_count = node.workers if node.inputs else 1 # only 1 producer
 
-            for _ in range(worker_count):   # there are 3 workers for each node but should not be for producer
+            for i in range(worker_count):   # there are 3 workers for each node but should not be for producer
                 tasks.append(asyncio.create_task(self.run_node(node)))
 
         tasks.append(asyncio.create_task(self.monitor()))
@@ -191,21 +230,17 @@ class Graph:
 
     # live monitor
     async def monitor(self):
-        prev = 0
         while True:
-            current = sum(n.processed for n in self.nodes.values())
-            print("throughput: ", current - prev, "items/sec")
-            prev = current
-
-            print("\n---System Stats---")
-
             for node in self.nodes.values():
+                q = node.input_queue
+                pressure = (q.qsize() / q.maxsize ) if q.maxsize > 0 else 0
+
                 print(
                     f"{node.id} | "
-                    f"processed = {node.processed}"
-                    f"failed = {node.failed}"
-                    f"queue = {node.input_queue.qsize()}"
+                    f" processed = {node.processed} "
+                    f" queue = {q.qsize()}"
+                    f" pressure = {pressure:.2f}"
                     )
 
+            print(f"Global Pressure: {self.get_global_pressure():.2f}\n")
             await asyncio.sleep(1)
-

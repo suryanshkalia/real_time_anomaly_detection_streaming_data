@@ -28,5 +28,4 @@ async def main():
         print("\nStopping system...")
         graph.stop_event.set()
 
-
 asyncio.run(main())
