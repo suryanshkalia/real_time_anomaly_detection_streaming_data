@@ -14,6 +14,12 @@ class Graph:
 
         self.forward = {}   # forward data flow
         self.backward = {}  # reverse dependencies
+        #controls for dynamic producer handling
+        self.target_pressure = 0.4
+        self.max_sleep = 0.5
+        self.min_sleep = 0.0
+        self.current_sleep = 0.01 # starting point
+        self.adjust_rate = 0.05  #rate of reacting
 
     # this will store the pressure for each queue and max pressure will be returned
     def get_global_pressure(self):
@@ -244,3 +250,13 @@ class Graph:
 
             print(f"Global Pressure: {self.get_global_pressure():.2f}\n")
             await asyncio.sleep(1)
+
+    def calculate_sleep(self):
+        pressure = self.get_global_pressure()
+
+        error = pressure - self.target_pressure
+
+        self.current_sleep += error * self.adjust_rate
+        self.current_sleep = max(self.min_sleep, min(self.max_sleep, self.current_sleep))
+
+        return self.current_sleep, pressure
