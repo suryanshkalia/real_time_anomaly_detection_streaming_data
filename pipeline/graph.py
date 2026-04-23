@@ -73,7 +73,7 @@ class Graph:
                 except Exception as e:
                     print(f"Producer {node.id} crashed : {e}")
             else:
-                while True: # worker node
+                while not self.stop_event.is_set(): # worker node
                     data = await node.input_queue.get()
                     # handle stop
                     if data is STOP:
@@ -87,6 +87,9 @@ class Graph:
 
                         node.input_queue.task_done()
                         break
+                    # this will prevent middle node from overloading downstream
+                    if self.get_global_pressure() > 0.7:
+                        await asyncio.sleep(0.01)
 
                     try:
                         for attempt in range(node.retries): # 2 retries
