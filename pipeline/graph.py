@@ -1,7 +1,5 @@
-#eal_time_anomaly_detection_streaming_data/pipeline/graph.py", line 241, in monitor
-#print(f"Global Pressure: {self.get_global_pressure():.2f}")
-#AttributeError: 'Graph' object has no attribute 'get_global_pressure'. Did you mean:
 import asyncio
+import time
 from nodes import Node
 from constants import STOP
 
@@ -20,6 +18,7 @@ class Graph:
         self.min_sleep = 0.0
         self.current_sleep = 0.01 # starting point
         self.adjust_rate = 0.05  #rate of reacting
+        self.MAX_LATENCY = 1.0 # seconds
 
     # this will store the pressure for each queue and max pressure will be returned
     def get_global_pressure(self):
@@ -74,19 +73,26 @@ class Graph:
                     print(f"Producer {node.id} crashed : {e}")
             else:
                 while not self.stop_event.is_set(): # worker node
-                    data = await node.input_queue.get()
+                    priority, data = await node.input_queue.get()
                     # handle stop
                     if data is STOP:
                         print(f"{node.id} recieved stop")
                         # send stop downstream to all workers
                         await asyncio.gather(*[
-                            self.nodes[out_id].input_queue.put(STOP)
+                            self.nodes[out_id].input_queue.put((float('inf'), STOP))
                             for out_id in node.outputs
                             for i in range(self.nodes[out_id].workers)
                             ])
 
                         node.input_queue.task_done()
                         break
+
+                      # remove/drop stale items
+                        if time.time() - data["ts"] > self.MAX_LATENCY:
+                            print(f"Dropping stale event: {data['id']}")
+                            node.input_queue.task_done()
+                            continue
+
                     # this will prevent middle node from overloading downstream
                     if self.get_global_pressure() > 0.7:
                         await asyncio.sleep(0.01)
@@ -97,8 +103,10 @@ class Graph:
                                 if node.outputs:
                                     result = await node.coro(input_data = data)
 
+                                    priority = -result["ts"]
+
                                     await asyncio.gather(*[
-                                        self.nodes[out_id].input_queue.put(result)
+                                        self.nodes[out_id].input_queue.put((priority, result))
                                         for out_id in node.outputs
                                         ]) # parallel push ot the downstream nodes
 
@@ -139,7 +147,8 @@ class Graph:
                 self.graph = graph
                 self.node = node
 
-            async def put(self, data):
+            async def put(self, item):
+                priority, data = item
                 pressures= []
 
                 #checking downstream presssure befrore pushing
@@ -160,7 +169,7 @@ class Graph:
 
                 for out_id in self.node.outputs:
                     q = self.graph.nodes[out_id].input_queue
-                    await q.put(data)
+                    await q.put((priority, data))
 
                     print(
                         f"push-> {out_id} | "

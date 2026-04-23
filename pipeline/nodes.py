@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from constants import STOP
+import time
 
 # right now its batch style execution that i will turn into real-time flow engine
 # now this is a dag streaming engine/ but not real-time like we need
@@ -20,7 +21,7 @@ class Node:
         self.inputs = set()  #dependencies( b takes from a so b depends upon a)
         self.outputs = set()  #downstream nodes( where the data is flowing towards)
 
-        self.input_queue = asyncio.Queue(maxsize=queue_size) # now if downstream is slow then producer will
+        self.input_queue = asyncio.PriorityQueue(maxsize=queue_size) # now if downstream is slow then producer will
         # try to be prodcue slowly, it's basic backpressure handling'
 
 
@@ -35,10 +36,15 @@ class Node:
                     await asyncio.sleep(sleep_time) # slow down the producer
                     # according to the sleep time recieved
 
-                item_id = str(uuid.uuid4())
+                item = {
+                    "id" : str(uuid.uuid4()),
+                    "ts" : time.time() # time stamp
+                    }
 
-                await output_queue.put(item_id)
-                print("Produced: ", item_id)
+                priority = -item["ts"]
+
+                await output_queue.put((priority, item))
+                print("Produced: ", item["id"])
                 print(f"[Producer] pressure = {pressure:.2f}, sleep = {sleep_time:.3f}")
 
         except asyncio.CancelledError:
@@ -46,7 +52,7 @@ class Node:
             raise
         finally:
             print("Producer sending STOP")
-            await output_queue.put(STOP)
+            await output_queue.put((float('inf'), STOP))
 
     @classmethod
     async def reverse(cls, grph=None, input_data=None):
@@ -54,7 +60,10 @@ class Node:
             return STOP
         await asyncio.sleep(0.5) # without thuis the revrerse is too fast, queues wont be filled
         # properly, producer will rarely block so downstream is too fast
-        return input_data[::-1]
+        return {
+            "id" : input_data["id"],
+            "ts" : input_data["ts"],
+            }
 
     @classmethod
     async def output_coro(cls, grph=None, input_data=None):
