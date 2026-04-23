@@ -28,27 +28,24 @@ class Node:
     #producer
     async def input_coro(cls, grph=None, output_queue = None, stop_event = None):
         try:
-            while True:
+            while not stop_event.is_set():
+                sleep_time, pressure = grph.calculate_sleep() # get sleep, pressure
+
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time) # slow down the producer
+                    # according to the sleep time recieved
+
                 item_id = str(uuid.uuid4())
 
                 await output_queue.put(item_id)
                 print("Produced: ", item_id)
+                print(f"[Producer] pressure = {pressure:.2f}, sleep = {sleep_time:.3f}")
 
-                pressure = grph.get_global_pressure()
-
-                # rate of producer controlled via backpressure signal
-                if pressure > 0.8:
-                    sleep_time = 0.3
-                elif pressure > 0.5:
-                    sleep_time = 0.15
-                else:
-                    sleep_time = 0.01
-
-                print(f"[Producer] pressure={pressure:.2f}, sleep={sleep_time}")
-                await asyncio.sleep(sleep_time)
-
+        except asyncio.CancelledError:
+            print("Producer Stopped")
+            raise
         finally:
-            print("Producer Stopped Sedning")
+            print("Producer sending STOP")
             await output_queue.put(STOP)
 
     @classmethod
