@@ -20,6 +20,7 @@ class Graph:
         self.adjust_rate = 0.05  #rate of reacting
         self.MAX_LATENCY = 1.0 # seconds
 
+
     # this will store the pressure for each queue and max pressure will be returned
     def get_global_pressure(self):
         pressures = []
@@ -74,32 +75,29 @@ class Graph:
             else:
                 while not self.stop_event.is_set(): # worker node
 
-                    #drop stale events immediately
-                    if time.time() - data["ts"] > self.MAX_LATENCY:
-                        print("dropping stale event: {data['id]}")
-                        continue
-
                     priority, data = await node.input_queue.get()
-                    # handle stop
+
                     if data is STOP:
-                        print(f"{node.id} recieved stop")
-                        # send stop downstream to all workers
-                        await asyncio.gather(*[
-                            self.nodes[out_id].input_queue.put((float('inf'), STOP))
-                            for out_id in node.outputs
-                            for i in range(self.nodes[out_id].workers)
-                            ])
+                        print(f"{node.id} recieved STOP")
+
+                        await asyncio.gather(
+                            *[
+                                self.nodes[out_id].input_queue.put(
+                                    (float('inf'), STOP)
+                                    )
+                                for out_id in node.outputs
+                                for i in range(self.nodes[out_id].workers)
+                                ]
+                            )
 
                         node.input_queue.task_done()
                         break
 
-                      # remove/drop stale items
-                        if time.time() - data["ts"] > self.MAX_LATENCY:
-                            print(f"Dropping stale event: {data['id']}")
-                            node.input_queue.task_done()
-                            continue
+                    if time.time() - data["ts"] > self.MAX_LATENCY:
+                        print(f"dropping stale: {data['id']}")
+                        node.input_queue.task_done()
+                        continue
 
-                    # this will prevent middle node from overloading downstream
                     if self.get_global_pressure() > 0.7:
                         await asyncio.sleep(0.01)
 
@@ -109,7 +107,9 @@ class Graph:
                                 if node.outputs:
                                     result = await node.coro(input_data = data)
 
-                                    priority = -result["ts"]
+                                    deadline = result["ts"]+ self.MAX_LATENCY
+
+                                    priority = deadline
 
                                     await asyncio.gather(*[
                                         self.nodes[out_id].input_queue.put((priority, result))
@@ -155,6 +155,19 @@ class Graph:
 
             async def put(self, item):
                 priority, data = item
+
+                if data is STOP:
+                    for out_id in self.node.outputs:
+                        await self.graph.nodes[out_id].input_queue.put(
+                            (float('inf'), STOP)
+                            )
+                    return
+
+                #drop stale before enqueue
+                if time.time() - data["ts"] > self.graph.MAX_LATENCY:
+                    print("dropping before enqueue")
+                    return
+
                 pressures= []
 
                 #checking downstream presssure befrore pushing
@@ -165,14 +178,10 @@ class Graph:
 
                 max_pressure = max(pressures) if pressures else 0
 
-                # control upstream push
                 if max_pressure > 0.8:
-                    await asyncio.sleep(0.2)
-                elif max_pressure > 0.5:
                     await asyncio.sleep(0.05)
 
                 #pushing now
-
                 for out_id in self.node.outputs:
                     q = self.graph.nodes[out_id].input_queue
                     await q.put((priority, data))
@@ -257,6 +266,7 @@ class Graph:
         while True:
             for node in self.nodes.values():
                 q = node.input_queue
+
                 pressure = (q.qsize() / q.maxsize ) if q.maxsize > 0 else 0
 
                 print(
@@ -278,3 +288,4 @@ class Graph:
         self.current_sleep = max(self.min_sleep, min(self.max_sleep, self.current_sleep))
 
         return self.current_sleep, pressure
+

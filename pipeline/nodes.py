@@ -41,7 +41,7 @@ class Node:
                     "ts" : time.time() # time stamp
                     }
 
-                deadline = data["ts"] + self.MAX_LATENCY
+                deadline = item["ts"] + grph.MAX_LATENCY
                 priority = deadline  # earliest deadline processed first
 
                 await output_queue.put((priority, item))
@@ -57,7 +57,7 @@ class Node:
 
     @classmethod
     async def reverse(cls, grph=None, input_data=None):
-        if input_data == STOP:
+        if input_data is STOP:
             return STOP
         await asyncio.sleep(0.05) # without thuis the revrerse is too fast, queues wont be filled
         # properly, producer will rarely block so downstream is too fast
@@ -70,7 +70,7 @@ class Node:
     async def output_coro(cls, grph=None, input_data=None):
         if input_data == STOP:
             print("Output node recieved Stop, shutting down")
-            return STOP
+            return input_data
         print("output: ", input_data)
 
 
