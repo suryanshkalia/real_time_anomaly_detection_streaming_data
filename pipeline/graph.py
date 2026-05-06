@@ -73,6 +73,12 @@ class Graph:
                     print(f"Producer {node.id} crashed : {e}")
             else:
                 while not self.stop_event.is_set(): # worker node
+
+                    #drop stale events immediately
+                    if time.time() - data["ts"] > self.MAX_LATENCY:
+                        print("dropping stale event: {data['id]}")
+                        continue
+
                     priority, data = await node.input_queue.get()
                     # handle stop
                     if data is STOP:

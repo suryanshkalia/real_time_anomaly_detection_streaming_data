@@ -41,7 +41,8 @@ class Node:
                     "ts" : time.time() # time stamp
                     }
 
-                priority = -item["ts"]
+                deadline = data["ts"] + self.MAX_LATENCY
+                priority = deadline  # earliest deadline processed first
 
                 await output_queue.put((priority, item))
                 print("Produced: ", item["id"])
@@ -58,7 +59,7 @@ class Node:
     async def reverse(cls, grph=None, input_data=None):
         if input_data == STOP:
             return STOP
-        await asyncio.sleep(0.5) # without thuis the revrerse is too fast, queues wont be filled
+        await asyncio.sleep(0.05) # without thuis the revrerse is too fast, queues wont be filled
         # properly, producer will rarely block so downstream is too fast
         return {
             "id" : input_data["id"],
