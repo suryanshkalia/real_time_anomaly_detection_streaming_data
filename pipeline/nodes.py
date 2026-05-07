@@ -13,6 +13,7 @@ class Node:
         self.coro = coro
         self.workers = workers
         self.retries = retries
+        self.state = {}
         self.processed = 0
         self.failed = 0
         self.first_item_time = None  # time of fisrt item processed
@@ -56,7 +57,7 @@ class Node:
             await output_queue.put((float('inf'), STOP))
 
     @classmethod
-    async def reverse(cls, grph=None, input_data=None):
+    async def reverse(cls, grph=None, node=None,  input_data=None):
         if input_data is STOP:
             return STOP
         await asyncio.sleep(0.05) # without thuis the revrerse is too fast, queues wont be filled
@@ -67,10 +68,40 @@ class Node:
             }
 
     @classmethod
-    async def output_coro(cls, grph=None, input_data=None):
-        if input_data == STOP:
+    async def output_coro(cls, grph=None, node = None, input_data=None):
+        if input_data is STOP:
             print("Output node recieved Stop, shutting down")
             return input_data
         print("output: ", input_data)
+
+    #every incomgin event ebters window, old are removed, node then emits
+    #current active events and count of events
+    @classmethod
+    async def window_node(cls, grph=None, node=None, input_data=None):
+        if input_data is STOP:
+            return STOP
+
+        if "window" not in node.state:
+            node.state["window"] = []
+
+        window = node.state["window"]
+
+        WINDOW_SIZE = 1.0
+        now = time.time()
+
+        window.append(input_data)
+
+        window[:] = [
+            item for item in window
+            if now - item["ts"] <= WINDOW_SIZE
+            ]
+
+        return {
+            "id" : str(uuid.uuid4()),
+            "ts" : now,
+            "count" : len(window),
+            "events" : window.copy()
+            }
+
 
 

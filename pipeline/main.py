@@ -6,12 +6,14 @@ input_d = {
     'nodes': {
         'inp' : {'coro': Node.input_coro, },
         'rev' : {'coro' : Node.reverse,},
-        'out' : {'coro' : Node.output_coro,}
+        'win' : {'coro' : Node.window_node},
+        'out' : {'coro' : Node.output_coro,},
         },
     'graph' : {
-        'inp' : {'rev'},  # earlier it was inp -> rev/out!!! rev-> out
-        'rev' : {'out'}, # now it's inp->rev->out ( flow is linear )
-        'out' : None,
+        'inp' : {'rev'},  #inp->rev
+        'rev' : {'win'}, #rev->window_node
+        'win' : {'out'}, # win->out
+        'out' : None, # out-> sink?
         }
     }
 

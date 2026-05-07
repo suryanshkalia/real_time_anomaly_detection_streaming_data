@@ -105,7 +105,11 @@ class Graph:
                         for attempt in range(node.retries): # 2 retries
                             try:
                                 if node.outputs:
-                                    result = await node.coro(input_data = data)
+                                    result = await node.coro(
+                                        grph = self,
+                                        node = node,
+                                        input_data = data
+                                        )
 
                                     deadline = result["ts"]+ self.MAX_LATENCY
 
@@ -117,7 +121,11 @@ class Graph:
                                         ]) # parallel push ot the downstream nodes
 
                                 else:
-                                    await node.coro(input_data = data) # sink
+                                    await node.coro(
+                                        grph = self,
+                                        node = node,
+                                        input_data = data
+                                        ) # sink
 
                                 node.processed += 1 # after first is processed we cal curr time
 
