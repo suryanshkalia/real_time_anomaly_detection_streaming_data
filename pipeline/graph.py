@@ -78,7 +78,7 @@ class Graph:
                 except Exception as e:
                     print(f"Producer {node.id} crashed : {e}")
             else:
-                while not self.stop_event.is_set(): # worker node
+                while True: # worker node
 
                     priority, data = await node.input_queue.get()
 
@@ -116,14 +116,29 @@ class Graph:
                                         input_data = data
                                         )
 
-                                    deadline = result["ts"]+ self.MAX_LATENCY
+                                    if result is STOP:
 
+                                        print(f"{node.id} forwarding STOP")
+
+                                        await asyncio.gather(*[
+                                            self.nodes[out_id].input_queue.put(
+                                                (float('inf'), STOP)
+                                                )
+                                            for out_id in node.outputs
+                                            for i in range(self.nodes[out_id].workers)
+                                            ])
+
+                                        break
+
+                                    deadline = result["ts"] + self.MAX_LATENCY
                                     priority = deadline
 
                                     await asyncio.gather(*[
-                                        self.nodes[out_id].input_queue.put((priority, result))
+                                        self.nodes[out_id].input_queue.put(
+                                            (priority, result)
+                                            )
                                         for out_id in node.outputs
-                                        ]) # parallel push ot the downstream nodes
+                                        ])
 
                                 else:
                                     await node.coro(
@@ -169,14 +184,14 @@ class Graph:
             async def put(self, item):
                 priority, data = item
 
-                self.graph.update_watermark(data["ts"])
-
                 if data is STOP:
                     for out_id in self.node.outputs:
                         await self.graph.nodes[out_id].input_queue.put(
                             (float('inf'), STOP)
                             )
                     return
+
+                self.graph.update_watermark(data["ts"])
 
                 #drop stale before enqueue
                 if time.time() - data["ts"] > self.graph.MAX_LATENCY:
@@ -237,28 +252,38 @@ class Graph:
         except asyncio.CancelledError:
             print("graph shutdown")
 
-            print("\n----Final system metrics----")
+        finally:
+            self.stop_event.set()
 
-            for node in self.nodes.values():
-                #skipping producer
-                if not node.inputs: # no input->producer
-                    print(f"{node.id}: producer node")
-                    continue
+            for i in tasks:
+                if not i.done():
+                    i.cancel()
 
-                if node.first_item_time and node.last_item_time:
-                    time_elapsed = node.last_item_time -     node.first_item_time
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-                    if time_elapsed > 0:
-                        throughput = node.processed / time_elapsed
-                    else:
-                        throughput = 0
-                else:
-                    throughput = 0
+        print("\n----Final system metrics----")
+
+        for node in self.nodes.values():
+            #skipping producer
+            if not node.inputs: # no input->producer
+                print(f"{node.id}: producer node")
+                continue
+
+            if node.first_item_time and node.last_item_time:
+
+                time_elapsed = (
+                    node.last_item_time -
+                    node.first_item_time
+                    )
+
+                throughput = (
+                    node.processed / time_elapsed
+                    if time_elapsed > 0 else 0
+                    )
+            else:
+                throughput = 0
 
                 print(f"{node.id}: {throughput: .2f} items/sec")
-
-        except asyncio.CancelledError:
-            print("graph shutdown")
 
         # system throughput
         sinks = [ n for n in self.nodes.values() if not n.outputs ]
@@ -278,7 +303,7 @@ class Graph:
 
     # live monitor
     async def monitor(self):
-        while True:
+        while not self.stop_event.is_set():
             for node in self.nodes.values():
                 q = node.input_queue
 
