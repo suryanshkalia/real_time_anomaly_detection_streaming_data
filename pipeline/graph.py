@@ -20,6 +20,11 @@ class Graph:
         self.adjust_rate = 0.05  #rate of reacting
         self.MAX_LATENCY = 1.0 # seconds
 
+        #for watermarking
+        self.max_event_ts = float("-inf")
+        self.allowed_late = 1.0 #events may arrive 1 second late
+        self.current_watermark = float("-inf") #stream progress marker
+
 
     # this will store the pressure for each queue and max pressure will be returned
     def get_global_pressure(self):
@@ -93,8 +98,8 @@ class Graph:
                         node.input_queue.task_done()
                         break
 
-                    if time.time() - data["ts"] > self.MAX_LATENCY:
-                        print(f"dropping stale: {data['id']}")
+                    if self.is_late(data):
+                        print(f"Late Event Dropped: {data['id']}")
                         node.input_queue.task_done()
                         continue
 
@@ -163,6 +168,8 @@ class Graph:
 
             async def put(self, item):
                 priority, data = item
+
+                self.graph.update_watermark(data["ts"])
 
                 if data is STOP:
                     for out_id in self.node.outputs:
@@ -282,6 +289,7 @@ class Graph:
                     f" processed = {node.processed} "
                     f" queue = {q.qsize()}"
                     f" pressure = {pressure:.2f}"
+                    f" watermark = {self.current_watermark:.3f} "
                     )
 
             print(f"Global Pressure: {self.get_global_pressure():.2f}\n")
@@ -296,4 +304,19 @@ class Graph:
         self.current_sleep = max(self.min_sleep, min(self.max_sleep, self.current_sleep))
 
         return self.current_sleep, pressure
+
+    # water mark will update during ingestion, meaing in run_node or fanout
+    def update_watermark(self, event_ts):
+        self.max_event_ts = max(
+            self.max_event_ts,
+            event_ts
+            )
+
+        self.current_watermark = (
+            self.max_event_ts - self.allowed_late
+            )
+
+    # is the event late?
+    def is_late(self, event):
+        return event["ts"] < self.current_watermark
 

@@ -1,4 +1,5 @@
 import asyncio
+import random
 import uuid
 from constants import STOP
 import time
@@ -6,6 +7,9 @@ import time
 # right now its batch style execution that i will turn into real-time flow engine
 # now this is a dag streaming engine/ but not real-time like we need
 # right now this is just high-thrp DAG executor not really what i need
+# introducing watermarking helped my system to advance according to
+# stream progress and not machine run_time and watermarks are useless unless
+#diroder exists, watermarking is right now just okay, it works well but needs to do more in future
 
 class Node:
     def __init__(self, id, coro, workers=3, queue_size=2, retries=3):
@@ -39,7 +43,7 @@ class Node:
 
                 item = {
                     "id" : str(uuid.uuid4()),
-                    "ts" : time.time() # time stamp
+                    "ts" : time.time() - random.uniform(0, 2) #random so that some events arrive late, watermakr advances
                     }
 
                 deadline = item["ts"] + grph.MAX_LATENCY
@@ -87,18 +91,22 @@ class Node:
         window = node.state["window"]
 
         WINDOW_SIZE = 1.0
-        now = time.time()
 
         window.append(input_data)
 
+        watermark = grph.current_watermark # time.time() replaced with this, as that was not better for sgtream processing
+
+
+
         window[:] = [
             item for item in window
-            if now - item["ts"] <= WINDOW_SIZE
+            if item["ts"] >= watermark - WINDOW_SIZE # keep items newer than window boundary
             ]
 
         return {
             "id" : str(uuid.uuid4()),
-            "ts" : now,
+            "ts" : watermark,
+            "watermark" : watermark,
             "count" : len(window),
             "events" : window.copy()
             }
