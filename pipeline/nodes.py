@@ -43,8 +43,16 @@ class Node:
 
                 item = {
                     "id" : str(uuid.uuid4()),
-                    "ts" : time.time() - random.uniform(0, 2) #random so that some events arrive late, watermakr advances
+                    "ts" : time.time() - random.uniform(0, 2), #random so that some events arrive late, watermakr advances
+
+                    #add some fake telemetry, our prodcuer is quite stable so z-score is rarely spiking
+                    "cpu" : random.uniform(20, 60),
+                    "memory" : random.uniform(30, 70),
+                    "latency" : random.uniform(50, 150)
                     }
+
+                if random.random() < 0.02:
+                    item["latency"] = random.uniform(500, 1500) # to insert anomaly, normal latency -> 30ms but this one can be more than enough for anomaly, this is done manually to flag a anomaly
 
                 deadline = item["ts"] + grph.MAX_LATENCY
                 priority = deadline  # earliest deadline processed first
@@ -67,8 +75,7 @@ class Node:
         await asyncio.sleep(0.05) # without thuis the revrerse is too fast, queues wont be filled
         # properly, producer will rarely block so downstream is too fast
         return {
-            "id" : input_data["id"],
-            "ts" : input_data["ts"],
+            **input_data
             }
 
     @classmethod
@@ -103,12 +110,61 @@ class Node:
             if item["ts"] >= watermark - WINDOW_SIZE # keep items newer than window boundary
             ]
 
+        latencies = [e["latency"] for e in window]
+
+        avg_latency = sum(latencies) / len(latencies)
+
         return {
             "id" : str(uuid.uuid4()),
             "ts" : watermark,
             "watermark" : watermark,
             "count" : len(window),
+            "avg_latency" : avg_latency,
+            "max_latency" : max(latencies),
             "events" : window.copy()
+            }
+
+    @classmethod
+    async def anomaly_node(cls=None, grph=None, node=None, input_data=None):
+        if input_data is STOP:
+            return STOP
+
+        if "history" not in node.state:
+            node.state["history"] = [] # a list
+
+        history = node.state["history"] # create a list first time this node runs
+
+        current = input_data["avg_latency"] # read the incoming first value, right now abnormal metric is the latency metric
+
+        history.append(current) # fill the list of history with latest value
+
+        if len(history) > 50: # keep only last 50 values
+            history.pop(0)
+
+        if len(history) < 10: # avoid anomaly detection until enough values
+            return {
+                **input_data,
+                "anomaly" : False
+                }
+        mean = sum(history)/len(history)
+
+        variance = sum((x - mean) ** 2 for x in history ) / len(history)
+
+        std = variance ** 0.5
+
+        z_score = (
+            (current - mean) / std
+            if std > 0 else 0
+            )
+
+        anomaly = abs(z_score) > 3 # is values is 3 std.dev. away from average, mark it as anomaly
+
+        return {
+            **input_data,
+            "mean" : mean,
+            "std" : std,
+            "z_score" : z_score,
+            "anomaly" : anomaly
             }
 
 
