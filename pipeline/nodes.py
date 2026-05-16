@@ -129,43 +129,53 @@ class Node:
         if input_data is STOP:
             return STOP
 
-        if "history" not in node.state:
-            node.state["history"] = [] # a list
+        current = input_data["avg_latency"] # our metric is latency, get the  latest value
 
-        history = node.state["history"] # create a list first time this node runs
+        alpha = 0.2 # smoothing factor, higher value= reacts faster, more sensitive, more noise, alpha controls memory
+        #lower alpha = smoother, slower adaptation, more stable, 0.2 is balanced
 
-        current = input_data["avg_latency"] # read the incoming first value, right now abnormal metric is the latency metric
+        if "ewma" not in node.state:
 
-        history.append(current) # fill the list of history with latest value
+           node.state["ewma"] = current
+           node.state["varience"] = 0
 
-        if len(history) > 50: # keep only last 50 values
-            history.pop(0)
+           return {
+               **input_data,
+               "ewma" : current,
+               "std" : 0,
+               "z_score" : 0,
+               "anomaly" : False
+               }
 
-        if len(history) < 10: # avoid anomaly detection until enough values
-            return {
-                **input_data,
-                "anomaly" : False
-                }
-        mean = sum(history)/len(history)
+        prev_ewma = node.state["ewma"]
+        prev_varience = node.state["varience"]
 
-        variance = sum((x - mean) ** 2 for x in history ) / len(history)
+        ewma = (
+           alpha*current + ( 1- alpha ) * prev_ewma
+           )
 
-        std = variance ** 0.5
+        varience = (
+           alpha * ((current - ewma)**2) + ( 1- alpha) * prev_varience
+           )
+
+        std = varience**0.5
 
         z_score = (
-            (current - mean) / std
-            if std > 0 else 0
-            )
+           (current - ewma) / std
+           if std > 0 else 0
+           )
 
-        anomaly = abs(z_score) > 3 # is values is 3 std.dev. away from average, mark it as anomaly
+        anomaly = abs(z_score) > 3
+
+        node.state["ewma"] = ewma
+        node.state["varience"] = varience
 
         return {
-            **input_data,
-            "mean" : mean,
-            "std" : std,
-            "z_score" : z_score,
-            "anomaly" : anomaly
-            }
-
+           **input_data,
+           "ewma" : ewma,
+           "std" : std,
+           "z_score" : z_score,
+           "anomaly" : anomaly
+           }
 
 
