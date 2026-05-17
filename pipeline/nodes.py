@@ -1,8 +1,11 @@
 import asyncio
 import random
 import uuid
-from constants import STOP
+import copy
 import time
+from constants import STOP
+from river import anomaly
+from river import preprocessing
 
 # right now its batch style execution that i will turn into real-time flow engine
 # now this is a dag streaming engine/ but not real-time like we need
@@ -45,13 +48,23 @@ class Node:
                     "id" : str(uuid.uuid4()),
                     "ts" : time.time() - random.uniform(0, 2), #random so that some events arrive late, watermakr advances
 
+                    #keys for keyed streaming
+                    "service" : random.choice(
+                        [
+                            "auth",
+                            "payments",
+                            "search",
+                            "recommendation"
+                            ]
+                        ),
+
                     #add some fake telemetry, our prodcuer is quite stable so z-score is rarely spiking
                     "cpu" : random.uniform(20, 60),
                     "memory" : random.uniform(30, 70),
                     "latency" : random.uniform(50, 150)
                     }
 
-                if random.random() < 0.02:
+                if random.random() < 0.08:
                     item["latency"] = random.uniform(500, 1500) # to insert anomaly, normal latency -> 30ms but this one can be more than enough for anomaly, this is done manually to flag a anomaly
 
                 deadline = item["ts"] + grph.MAX_LATENCY
@@ -83,7 +96,14 @@ class Node:
         if input_data is STOP:
             print("Output node recieved Stop, shutting down")
             return input_data
-        print("output: ", input_data)
+        print(
+            f"""
+            SERVICE : {input_data['service']}
+            AVG LATENCY : {input_data['avg_latency']:.2f}
+            ANOMALY SCORE : {input_data['anomaly_score']:.4f}
+            ANOMALY: {input_data['anomaly']}
+            """
+            )
 
     #every incomgin event ebters window, old are removed, node then emits
     #current active events and count of events
@@ -92,12 +112,32 @@ class Node:
         if input_data is STOP:
             return STOP
 
-        if "window" not in node.state:
-            node.state["window"] = []
+        key = input_data["service"]
 
-        window = node.state["window"]
+        if "windows" not in node.state:
+            node.state["windows"] = {}
 
-        WINDOW_SIZE = 1.0
+        windows = node.state["windows"]
+
+        if "seen" not in node.state:
+            node.state["seen"] = set()
+
+        seen = node.state["seen"]
+
+        if input_data["id"] in seen:
+            return None
+
+        seen.add(input_data["id"])
+
+        if len(seen) > 10000:
+            seen.clear()
+
+        if key not in windows:
+            windows[key] = []
+
+        window = windows[key]
+
+        WINDOW_SIZE = 0.75
 
         window.append(input_data)
 
@@ -117,65 +157,73 @@ class Node:
         return {
             "id" : str(uuid.uuid4()),
             "ts" : watermark,
+            "service" : key,
             "watermark" : watermark,
             "count" : len(window),
             "avg_latency" : avg_latency,
             "max_latency" : max(latencies),
-            "events" : window.copy()
+            "events" : copy.deepcopy(window),
+            "raw_latency" : input_data["latency"]
             }
+    #now wvery service will get indep. windows, isolated telemetry, indep. aggregation
 
     @classmethod
     async def anomaly_node(cls=None, grph=None, node=None, input_data=None):
+
         if input_data is STOP:
             return STOP
 
-        current = input_data["avg_latency"] # our metric is latency, get the  latest value
+        key = input_data["service"]
 
-        alpha = 0.2 # smoothing factor, higher value= reacts faster, more sensitive, more noise, alpha controls memory
-        #lower alpha = smoother, slower adaptation, more stable, 0.2 is balanced
+        #initialize per-service models
+        if "models" not in node.state:
+            node.state["models"] = {}
 
-        if "ewma" not in node.state:
+        models = node.state["models"]
 
-           node.state["ewma"] = current
-           node.state["varience"] = 0
+        # creating model first time this service appears
+        if key not in models:
 
-           return {
-               **input_data,
-               "ewma" : current,
-               "std" : 0,
-               "z_score" : 0,
-               "anomaly" : False
-               }
+            models[key] = {
+                "scaler" : preprocessing.StandardScaler(),
+                "detector" : anomaly.HalfSpaceTrees(
+                    n_trees = 5,
+                    height = 3,
+                    window_size = 25,
+                    seed = 42
+                    )
+                }
 
-        prev_ewma = node.state["ewma"]
-        prev_varience = node.state["varience"]
+        state = models[key]
 
-        ewma = (
-           alpha*current + ( 1- alpha ) * prev_ewma
-           )
+        scaler = state["scaler"]
+        detector = state["detector"]
 
-        varience = (
-           alpha * ((current - ewma)**2) + ( 1- alpha) * prev_varience
-           )
+        #feature vector
+        x = {
+            "avg_latency" : input_data["avg_latency"],
+            "max_latency" : input_data["max_latency"],
+            "count" : input_data["count"],
+            "raw_latency" : input_data["raw_latency"]
+            }
 
-        std = varience**0.5
+        #online scaling
+        scaler.learn_one(x)
+        x_scaled = scaler.transform_one(x)
 
-        z_score = (
-           (current - ewma) / std
-           if std > 0 else 0
-           )
+        #anomaly score
+        score = detector.score_one(x_scaled)
 
-        anomaly = abs(z_score) > 3
+        #online learning update
+        detector.learn_one(x_scaled)
 
-        node.state["ewma"] = ewma
-        node.state["varience"] = varience
+        #threshold
+        anomaly_detected = score > 0.55
 
         return {
-           **input_data,
-           "ewma" : ewma,
-           "std" : std,
-           "z_score" : z_score,
-           "anomaly" : anomaly
-           }
+            **input_data,
+            "anomaly_score" : round(score, 4),
+            "anomaly": anomaly_detected
+            }
 
 

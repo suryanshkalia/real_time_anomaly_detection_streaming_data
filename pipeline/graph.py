@@ -22,7 +22,7 @@ class Graph:
 
         #for watermarking
         self.max_event_ts = float("-inf")
-        self.allowed_late = 1.0 #events may arrive 1 second late
+        self.allowed_late = 3.0 #events may arrive 3 second late
         self.current_watermark = float("-inf") #stream progress marker
 
 
@@ -91,16 +91,11 @@ class Graph:
                                     (float('inf'), STOP)
                                     )
                                 for out_id in node.outputs
-                                for i in range(self.nodes[out_id].workers)
                                 ]
                             )
 
-                        node.input_queue.task_done()
-                        break
-
                     if self.is_late(data):
                         print(f"Late Event Dropped: {data['id']}")
-                        node.input_queue.task_done()
                         continue
 
                     if self.get_global_pressure() > 0.7:
@@ -115,6 +110,8 @@ class Graph:
                                         node = node,
                                         input_data = data
                                         )
+                                    if result is None:
+                                        break
 
                                     if result is STOP:
 
@@ -124,8 +121,6 @@ class Graph:
                                             self.nodes[out_id].input_queue.put(
                                                 (float('inf'), STOP)
                                                 )
-                                            for out_id in node.outputs
-                                            for i in range(self.nodes[out_id].workers)
                                             ])
 
                                         break
@@ -283,7 +278,7 @@ class Graph:
             else:
                 throughput = 0
 
-                print(f"{node.id}: {throughput: .2f} items/sec")
+            print(f"{node.id}: {throughput: .2f} items/sec")
 
         # system throughput
         sinks = [ n for n in self.nodes.values() if not n.outputs ]

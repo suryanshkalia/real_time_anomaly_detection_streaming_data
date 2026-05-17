@@ -8,12 +8,13 @@ input_d = {
         'rev' : {'coro' : Node.reverse,},
         'win' : {'coro' : Node.window_node},
         'out' : {'coro' : Node.output_coro,},
+        'anom': {'coro' : Node.anomaly_node,}
         },
     'graph' : {
         'inp' : {'rev'},  #inp->rev
         'rev' : {'win'}, #rev->window_node
-        'win' : {'out'}, # win->out
-        'out' : None, # out-> sink?
+        'win' : {'anom'}, # win->out
+        'anom' : {'out'}, # out-> sink?
         }
     }
 
