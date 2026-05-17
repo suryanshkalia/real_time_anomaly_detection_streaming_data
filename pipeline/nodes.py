@@ -1,11 +1,9 @@
 import asyncio
 import random
 import uuid
-import copy
-import time
 from constants import STOP
-from river import anomaly
-from river import preprocessing
+from rich import print
+import time
 
 # right now its batch style execution that i will turn into real-time flow engine
 # now this is a dag streaming engine/ but not real-time like we need
@@ -48,23 +46,13 @@ class Node:
                     "id" : str(uuid.uuid4()),
                     "ts" : time.time() - random.uniform(0, 2), #random so that some events arrive late, watermakr advances
 
-                    #keys for keyed streaming
-                    "service" : random.choice(
-                        [
-                            "auth",
-                            "payments",
-                            "search",
-                            "recommendation"
-                            ]
-                        ),
-
                     #add some fake telemetry, our prodcuer is quite stable so z-score is rarely spiking
                     "cpu" : random.uniform(20, 60),
                     "memory" : random.uniform(30, 70),
                     "latency" : random.uniform(50, 150)
                     }
 
-                if random.random() < 0.08:
+                if random.random() < 0.02:
                     item["latency"] = random.uniform(500, 1500) # to insert anomaly, normal latency -> 30ms but this one can be more than enough for anomaly, this is done manually to flag a anomaly
 
                 deadline = item["ts"] + grph.MAX_LATENCY
@@ -95,15 +83,23 @@ class Node:
     async def output_coro(cls, grph=None, node = None, input_data=None):
         if input_data is STOP:
             print("Output node recieved Stop, shutting down")
-            return input_data
-        print(
-            f"""
-            SERVICE : {input_data['service']}
-            AVG LATENCY : {input_data['avg_latency']:.2f}
-            ANOMALY SCORE : {input_data['anomaly_score']:.4f}
-            ANOMALY: {input_data['anomaly']}
-            """
-            )
+            return Stop
+
+        # window output
+        print("[Window Stream]")
+        print(f"TIME (watermark): {input_data.get('watermark')}")
+        print(f"COUNT          : {input_data.get('count')}")
+        print(f"AVG LATENCY    : {input_data.get('avg_latency'):.2f}")
+        print(f"MAX LATENCY    : {input_data.get('max_latency'):.2f}")
+
+        # anomaly output
+        if "anomaly" in input_data:
+            print("\n[ANOMALY DETECTOR]")
+            print(f"MEAN     : {input_data.get('mean', 0):.2f}")
+            print(f"STD      : {input_data.get('std', 0):.2f}")
+            print(f"Z-SCORE  : {input_data.get('z_score', 0):.2f}")
+            print(f"ANOMALY  : {input_data.get('anomaly', False)}")
+
 
     #every incomgin event ebters window, old are removed, node then emits
     #current active events and count of events
@@ -112,32 +108,12 @@ class Node:
         if input_data is STOP:
             return STOP
 
-        key = input_data["service"]
+        if "window" not in node.state:
+            node.state["window"] = []
 
-        if "windows" not in node.state:
-            node.state["windows"] = {}
+        window = node.state["window"]
 
-        windows = node.state["windows"]
-
-        if "seen" not in node.state:
-            node.state["seen"] = set()
-
-        seen = node.state["seen"]
-
-        if input_data["id"] in seen:
-            return None
-
-        seen.add(input_data["id"])
-
-        if len(seen) > 10000:
-            seen.clear()
-
-        if key not in windows:
-            windows[key] = []
-
-        window = windows[key]
-
-        WINDOW_SIZE = 0.75
+        WINDOW_SIZE = 1.0
 
         window.append(input_data)
 
@@ -157,73 +133,52 @@ class Node:
         return {
             "id" : str(uuid.uuid4()),
             "ts" : watermark,
-            "service" : key,
             "watermark" : watermark,
             "count" : len(window),
             "avg_latency" : avg_latency,
             "max_latency" : max(latencies),
-            "events" : copy.deepcopy(window),
-            "raw_latency" : input_data["latency"]
+            "events" : window.copy()
             }
-    #now wvery service will get indep. windows, isolated telemetry, indep. aggregation
 
     @classmethod
     async def anomaly_node(cls=None, grph=None, node=None, input_data=None):
-
         if input_data is STOP:
             return STOP
 
-        key = input_data["service"]
+        if "history" not in node.state:
+            node.state["history"] = [] # a list
 
-        #initialize per-service models
-        if "models" not in node.state:
-            node.state["models"] = {}
+        history = node.state["history"] # create a list first time this node runs
 
-        models = node.state["models"]
+        current = input_data["avg_latency"] # read the incoming first value, right now abnormal metric is the latency metric
 
-        # creating model first time this service appears
-        if key not in models:
+        history.append(current) # fill the list of history with latest value
 
-            models[key] = {
-                "scaler" : preprocessing.StandardScaler(),
-                "detector" : anomaly.HalfSpaceTrees(
-                    n_trees = 5,
-                    height = 3,
-                    window_size = 25,
-                    seed = 42
-                    )
+        if len(history) > 50: # keep only last 50 values
+            history.pop(0)
+
+        if len(history) < 10: # avoid anomaly detection until enough values
+            return {
+                **input_data,
+                "anomaly" : False
                 }
+        mean = sum(history)/len(history)
 
-        state = models[key]
+        variance = sum((x - mean) ** 2 for x in history ) / len(history)
 
-        scaler = state["scaler"]
-        detector = state["detector"]
+        std = variance ** 0.5
 
-        #feature vector
-        x = {
-            "avg_latency" : input_data["avg_latency"],
-            "max_latency" : input_data["max_latency"],
-            "count" : input_data["count"],
-            "raw_latency" : input_data["raw_latency"]
-            }
+        z_score = (
+            (current - mean) / std
+            if std > 0 else 0
+            )
 
-        #online scaling
-        scaler.learn_one(x)
-        x_scaled = scaler.transform_one(x)
-
-        #anomaly score
-        score = detector.score_one(x_scaled)
-
-        #online learning update
-        detector.learn_one(x_scaled)
-
-        #threshold
-        anomaly_detected = score > 0.55
+        anomaly = abs(z_score) > 3 # is values is 3 std.dev. away from average, mark it as anomaly
 
         return {
             **input_data,
-            "anomaly_score" : round(score, 4),
-            "anomaly": anomaly_detected
+            "mean" : mean,
+            "std" : std,
+            "z_score" : z_score,
+            "anomaly" : anomaly
             }
-
-

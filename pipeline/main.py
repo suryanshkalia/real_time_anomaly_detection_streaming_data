@@ -13,8 +13,8 @@ input_d = {
     'graph' : {
         'inp' : {'rev'},  #inp->rev
         'rev' : {'win'}, #rev->window_node
-        'win' : {'anom'}, # win->out
-        'anom' : {'out'}, # out-> sink?
+        'win' : {'anom', 'out'}, # win->out
+        'anom': {'out'},
         }
     }
 
