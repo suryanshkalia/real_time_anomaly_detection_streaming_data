@@ -284,6 +284,12 @@ class Graph:
 
             print(f"{node.id}: {throughput: .2f} items/sec")
 
+            if "total_anomalies" in node.state:
+                print (
+                    f"{node.id}: total_anomalies = "
+                    f"{node.state['total_anomalies']}"
+                    )
+
         # system throughput
         sinks = [n for n in self.nodes.values() if not n.outputs]
 
